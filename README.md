@@ -55,7 +55,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Then from the repo root:
 
 ```bash
-uv sync
+uv sync --extra cuda   # NVIDIA GPU (TACC or a desktop with a CUDA card)
+uv sync --extra cpu    # no NVIDIA GPU (most laptops), about 4 GB smaller
 ```
 
 This pulls Python 3.12, mjlab, PyTorch, and microduck_rl plus the BAM actuator model straight from GitHub at pinned commits. The first sync takes a few minutes. It also writes `uv.lock`, which should be committed so we both get identical versions.
@@ -64,7 +65,7 @@ If you're using wandb for logging, run `uv run wandb login` once.
 
 ### TACC
 
-On a Lonestar6 GPU node the same `uv sync` works. Vista's GPU nodes are ARM (aarch64), where the PyPI PyTorch wheel is CPU-only, so stick to Lonestar6 unless we add the CUDA wheel index for ARM. Keep the repo and `.venv` in `$WORK` or `$SCRATCH`, not `$HOME`, since the environment is a few GB. Use `--logger tensorboard` if the compute node can't reach wandb.
+On a Lonestar6 GPU node use `uv sync --extra cuda`. Vista's GPU nodes are ARM (aarch64), where the PyPI PyTorch wheel is CPU-only, so stick to Lonestar6 unless we add the CUDA wheel index for ARM. Keep the repo and `.venv` in `$WORK` or `$SCRATCH`, not `$HOME`, since the environment is a few GB. Use `--logger tensorboard` if the compute node can't reach wandb.
 
 ## Quick check
 

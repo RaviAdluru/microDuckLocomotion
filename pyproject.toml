@@ -10,29 +10,46 @@ dependencies = [
     "mujoco==3.10.0",
     "mujoco-warp==3.8.1",
     "warp-lang==1.12.0",
-    "torch==2.9.1",
     "better-actuator-models",
     "scipy>=1.16",
     "matplotlib>=3.10",
     "wandb",
     "tensorboard",
+    # newer mjviser pulls mujoco-core 4.x, which overwrites mujoco 3.10 files
+    "mjviser==0.0.14",
+    "viser==1.0.30",
 ]
 
-# microduck_rl and the BAM actuator model aren't on PyPI, these pin the exact commits we tested against
+# pick one: uv sync --extra cpu (no NVIDIA GPU) or uv sync --extra cuda (TACC, NVIDIA cards)
+[project.optional-dependencies]
+cpu = ["torch==2.9.1"]
+cuda = ["torch==2.9.1"]
+
+# microduck_rl and the BAM actuator model are not on PyPI
 [tool.uv.sources]
 mjlab-microduck = { git = "https://github.com/pollen-robotics/microduck_rl.git", rev = "0daab160d3fb1c2cbaba16a4a19052f36709dd9e" }
-better-actuator-models = { git = "https://github.com/Rhoban/bam.git", rev = "62bd8ce12154340be97e06f7f41a0ca8f116d967" }
+torch = [
+    { index = "torchCpu", extra = "cpu", marker = "platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "torchCpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 
 [tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }]]
 # same overrides microduck_rl uses. bam pins an old protobuf that drags onnx down to a version with no wheels
 override-dependencies = [
+    "better-actuator-models @ git+https://github.com/Rhoban/bam.git@62bd8ce12154340be97e06f7f41a0ca8f116d967",
     "protobuf>=4.0,<7.0",
     "onnx>=1.20.1",
     "zmq ; python_version < '3.0'",
 ]
 
 [build-system]
-requires = ["uv_build>=0.8.19,<0.10"]
+requires = ["uv_build>=0.8.19,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
