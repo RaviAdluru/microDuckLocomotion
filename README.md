@@ -35,47 +35,114 @@ duckWalk/
   runLogger.py      wandb / tensorboard / no logging
   cliArgs.py        turns config.py into argparse flags
 scripts/
-  sanityCheck.py    runs our PPO on cartpole to make sure the algorithm works
-  train.py          train a walking policy
-  play.py           watch a checkpoint in the MuJoCo viewer
-  evaluate.py       test checkpoints on every eval terrain, writes a CSV
-  plotEval.py       bar charts from the eval CSV
+  sanityCheck.py         runs our PPO on cartpole to make sure the algorithm works
+  train.py               train a walking policy
+  play.py                watch a checkpoint in the MuJoCo viewer
+  evaluate.py            test checkpoints on every eval terrain, writes a CSV
+  plotEval.py            bar charts from the eval CSV
+  trainLonestar6.slurm   batch job for a full run on TACC
 ```
 
 ## Setup
 
-You need an NVIDIA GPU for real training (the sim runs thousands of robots in parallel on the GPU). CPU works for checking that things run, but it's orders of magnitude slower (about 80 sim steps per second on a laptop CPU with 8 robots).
+Tested on Linux (CachyOS) and on TACC Lonestar6. macOS and Windows are untested. On Windows, use WSL.
 
-Install [uv](https://docs.astral.sh/uv/) if you don't have it:
+### 1. What you need
+
+- **git**
+- **[uv](https://docs.astral.sh/uv/)**, which manages Python and every package. You don't need Python installed yourself; uv downloads 3.12.
+- **Disk space:** about 2 GB with CPU-only PyTorch, about 6 GB with the CUDA build. Check with `df -h ~`.
+- **An NVIDIA GPU, only for real training.** Everything else (development, quick tests, the viewer, evaluation) runs fine on a laptop CPU. Full training runs go on TACC.
+
+Install uv with the official installer:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Then from the repo root:
+Or through your package manager, e.g. `sudo pacman -Syu uv` on Arch/CachyOS. Open a new terminal afterwards and check that `uv --version` works.
+
+### 2. Clone and install
 
 ```bash
-uv sync --extra cuda   # NVIDIA GPU (TACC or a desktop with a CUDA card)
-uv sync --extra cpu    # no NVIDIA GPU (most laptops), about 4 GB smaller
+git clone https://github.com/RaviAdluru/microDuckLocomotion.git
+cd microDuckLocomotion
 ```
 
-This pulls Python 3.12, mjlab, PyTorch, and microduck_rl plus the BAM actuator model straight from GitHub at pinned commits. The first sync takes a few minutes. It also writes `uv.lock`, which should be committed so we both get identical versions.
-
-If you're using wandb for logging, run `uv run wandb login` once.
-
-### TACC
-
-On a Lonestar6 GPU node use `uv sync --extra cuda`. Vista's GPU nodes are ARM (aarch64), where the PyPI PyTorch wheel is CPU-only, so stick to Lonestar6 unless we add the CUDA wheel index for ARM. Keep the repo and `.venv` in `$WORK` or `$SCRATCH`, not `$HOME`, since the environment is a few GB. Use `--logger tensorboard` if the compute node can't reach wandb.
-
-## Quick check
-
-Before training the duck, make sure PPO itself learns something:
+Pick one, depending on your machine:
 
 ```bash
+uv sync --extra cpu    # no NVIDIA GPU (most laptops)
+uv sync --extra cuda   # NVIDIA GPU (TACC, or a desktop with a CUDA card)
+```
+
+The first sync takes a few minutes. It creates `.venv/` in the repo and installs the exact versions in `uv.lock`, including microduck_rl and the BAM actuator model straight from GitHub. Always pass one of the two extras. A plain `uv sync` pulls the CUDA build by default.
+
+### 3. Check it works
+
+```bash
+# robot config loads (should print "duck config ok" with no "Failed to load task package" warning)
+uv run python -c "from mjlab_microduck.tasks.microduck_velocity_env_cfg import make_microduck_velocity_env_cfg; make_microduck_velocity_env_cfg(rough=True); print('duck config ok')"
+
+# PPO learns on cartpole: the return column should climb over a few hundred iterations
 uv run scripts/sanityCheck.py
+
+# a tiny duck training run: should print "actor obs 51, critic obs 66, actions 14" then an iter 0 line
+uv run scripts/train.py --device cpu --numEnvs 8 --maxIterations 2 --logger none --runName smokeTest
 ```
 
-On cartpole the return should climb steadily over the first couple hundred iterations (on CPU with 128 envs it went from about 20 to about 49 in 200 iterations). If it doesn't, the problem is in `ppo.py`, not the robot.
+The first run of anything compiles a bunch of Warp kernels (lots of `Module ... took ... ms (compiled)` lines). They get cached in `~/.cache/warp`, so later runs start much faster.
+
+### 4. Logging
+
+For wandb, make a free account at wandb.ai, then run `uv run wandb login` once. If you'd rather skip wandb, add `--logger tensorboard` to any training command.
+
+## Why the versions are pinned
+
+Don't bump these in `pyproject.toml` without testing first. Each pin fixes a real breakage:
+
+- **`better-actuator-models` (BAM) at commit `62bd8ce`.** The BAM branch microduck_rl points at has moved on, and the newer version breaks microduck's actuator config (`unexpected keyword argument 'vin_drop_gain_range'`). It's pinned through `override-dependencies`, because a normal source entry conflicts with microduck_rl's own pin.
+- **`mjviser==0.0.14` / `viser==1.0.30`.** Newer mjviser pulls in `mujoco-core` 4.x, which overwrites files from the `mujoco` 3.10 package the simulator needs (`libmujoco.so.3.10.0: cannot open shared object file`).
+- **`mujoco`, `mujoco-warp`, `mjlab`, `warp-lang`, `torch`.** These match what microduck_rl was tested with.
+- **The CPU torch index is limited to x86_64**, so it doesn't clash with microduck_rl's own torch rule for ARM machines.
+
+## TACC (Lonestar6)
+
+Use Lonestar6's A100 nodes. Don't use Vista: its GPU nodes are ARM, and our CUDA setup only covers x86.
+
+One-time setup on a login node:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+echo 'export UV_CACHE_DIR=$SCRATCH/uvCache' >> ~/.bashrc   # $HOME quota is small, keep uv's cache in scratch
+source ~/.bashrc
+cd $WORK
+git clone https://github.com/RaviAdluru/microDuckLocomotion.git
+cd microDuckLocomotion
+uv sync --extra cuda
+```
+
+To test interactively on a GPU node (max 2 hours on the dev queue):
+
+```bash
+idev -p gpu-a100-dev -N 1 -n 1 -t 1:00:00
+uv run scripts/train.py --runName gpuTest --maxIterations 50 --logger tensorboard
+```
+
+For full runs, open `scripts/trainLonestar6.slurm`, put our allocation name on the `#SBATCH -A` line, then submit from the repo root. Anything after the script name goes straight to `train.py`:
+
+```bash
+sbatch scripts/trainLonestar6.slurm --runName baseline
+sbatch scripts/trainLonestar6.slurm --runName history5 --historyLength 5
+squeue -u $USER              # check on your jobs
+tail -f slurm_<jobid>.out    # follow the output
+```
+
+Compute nodes may not reach wandb, so the slurm script logs to tensorboard. To look at results or watch the robot, copy the run folder back to your laptop:
+
+```bash
+scp -r <tacc-user>@ls6.tacc.utexas.edu:/path/to/microDuckLocomotion/runs/<run> runs/
+```
 
 ## Training
 
@@ -104,8 +171,11 @@ Useful flags:
 | `--domainRand` | `true` | randomize mass, friction, motor gains, CoM, plus random pushes |
 | `--numEnvs` | `4096` | parallel robots |
 | `--maxIterations` | `3000` | PPO iterations (each one is 24 steps from every env) |
+| `--seed` | `1` | change it to repeat a run with different randomness |
 | `--logger` | `wandb` | `wandb`, `tensorboard` or `none` |
 | `--device` | `cuda:0` | falls back to cpu automatically if there's no GPU |
+
+For scale: a full run is 3000 × 24 × 4096 ≈ 295 million sim steps. That's a couple of hours on an A100 and weeks on a laptop CPU (a laptop does roughly 50-80 steps per second with 8 robots).
 
 ## Watching training
 
@@ -123,6 +193,8 @@ What gets logged:
 - `env/Episode_Termination/*`: why episodes end (fell over vs timed out)
 - `train/*`: policy loss, value loss, entropy, approx KL, clip fraction, explained variance, learning rate, action std
 
+On a full 4096-env run, `train/approxKl` should sit around 0.01. Tiny test runs (8 envs) show much bigger values, which is just noise from the small batch.
+
 ## Watching the robot
 
 ```bash
@@ -131,7 +203,7 @@ uv run scripts/play.py runs/<run>/model_3000.pt --terrain stairs --difficulty 1.
 uv run scripts/play.py runs/<run>/model_3000.pt --viewer viser
 ```
 
-`--viewer viser` serves the sim in the browser, which is the way to go over ssh or on TACC.
+`--viewer viser` serves the sim in the browser instead of opening a window. Playback runs fine on a laptop CPU.
 
 ## Evaluation
 
@@ -173,9 +245,23 @@ Run each with a few seeds (`--seed`) so the comparisons hold up.
 - Actor obs is 51 numbers per frame (base angular velocity, gravity direction, 14 joint positions, 14 joint velocities, last action, velocity command). The critic gets 66, adding true base velocity and foot contact info that only exists in sim.
 - The action is 14 joint position targets at 50 Hz. Physics runs at 200 Hz.
 - Pollen's config also commands head and body poses. We pin those to zero and keep a `headHold` reward so the neck motors stay still.
+- The warning `Actuator config matched 14 joint(s) but the same expressions also match 7 site(s)` comes from Pollen's robot config and is harmless.
 - The Microduck model files are CC BY-NC-SA 4.0 (non-commercial) per microduck_rl. That's fine for coursework. Credit Pollen Robotics if you reuse anything.
 
+## Troubleshooting
+
+| error | fix |
+|---|---|
+| `Unknown command: uv` / `uv: command not found` | uv isn't installed or isn't on your PATH. Install it, then open a new terminal. |
+| `No space left on device` during sync | Free space (`uv cache clean`, clear your package manager cache), or use `--extra cpu`, which is about 4 GB smaller. |
+| `libmujoco.so.3.10.0: cannot open shared object file` | Something pulled in `mujoco-core` 4.x. Check the mjviser pin, then `rm -rf .venv && uv sync --extra cpu`. |
+| `Failed to load task package mjlab_microduck: ... vin_drop_gain_range` | Wrong BAM version. Check the BAM override pin, then re-sync. |
+| `conflicting indexes for package torch` | Don't add torch back to the main `dependencies` list, and keep the `marker` on the CPU torch source. |
+| `Warp CUDA warning: Could not find or load the NVIDIA CUDA driver` | Expected on a machine without an NVIDIA GPU. Everything falls back to CPU. |
+
 ## Working on this together
+
+Ravi adds collaborators from the repo's Settings → Collaborators page (or `gh api -X PUT repos/RaviAdluru/microDuckLocomotion/collaborators/<username>`). Accept the email invite, then clone as above.
 
 Work on a branch and open a PR instead of pushing to `main`:
 
@@ -183,6 +269,7 @@ Work on a branch and open a PR instead of pushing to `main`:
 git checkout -b yourName/whatYouAreDoing
 # ...changes...
 git push -u origin yourName/whatYouAreDoing
+gh pr create          # or open the PR on github.com
 ```
 
-Don't commit `runs/`, `wandb/` or eval output, they're in `.gitignore`. Share checkpoints through wandb or a shared drive instead.
+Don't commit `runs/`, `wandb/`, slurm logs or eval output, they're in `.gitignore`. Share checkpoints through wandb or a shared drive instead. If you change dependencies, commit the updated `uv.lock` in the same PR.
