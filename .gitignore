@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# training output, checkpoints get big fast
+runs/
+wandb/
+results/*.csv
+results/*.png
+!results/.gitkeep
+
+.vscode/
+.idea/
+.DS_Store
