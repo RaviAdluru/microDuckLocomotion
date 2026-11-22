@@ -38,9 +38,9 @@ def buildEvalEnv(trainCfg, terrainName, difficulty, args):
     twist.rel_standing_envs = 0.0
     twist.rel_heading_envs = 0.0
     twist.rel_forward_envs = 0.0
-    # Pollen's commands can randomly zero some envs (stand still). every eval duck should walk
-    if hasattr(twist, "zero_command_prob"):
-        twist.zero_command_prob = 0.0
+    # Pollen's command class sends 15% of envs a turn-in-place command (zero forward speed).
+    # with turning zeroed above, those ducks would just stand still. every eval duck should walk
+    twist.rel_turn_in_place_envs = 0.0
     twist.resampling_time_range = (args.seconds + 1.0, args.seconds + 1.0)
     return ManagerBasedRlEnv(cfg, device=args.device)
 
