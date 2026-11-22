@@ -1,6 +1,8 @@
 """Test checkpoints on every eval terrain, including ones never seen in training.
 Each env gets a fixed forward speed command; we record falls, velocity tracking error and distance.
     uv run scripts/evaluate.py runs/a/model_3000.pt runs/b/model_3000.pt --out results/eval.csv
+The combined courses need a longer episode so ducks cross tile seams:
+    uv run scripts/evaluate.py runs/a/model_3000.pt --terrains combinedSeen combinedAll --seconds 20
 """
 
 import argparse
@@ -11,7 +13,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv
 
 from duckWalk.envConfig import makeEnvCfg
-from duckWalk.terrains import EVAL_TERRAINS, HELD_OUT, evalTerrain
+from duckWalk.terrains import EVAL_NAMES, HELD_OUT, TIERS, evalTerrain
 from duckWalk.trainer import loadActor
 
 
@@ -38,6 +40,9 @@ def buildEvalEnv(trainCfg, terrainName, difficulty, args):
     twist.rel_standing_envs = 0.0
     twist.rel_heading_envs = 0.0
     twist.rel_forward_envs = 0.0
+    # Pollen's command class sends 15% of envs a turn-in-place command (zero forward speed).
+    # with turning zeroed above, those ducks would just stand still. every eval duck should walk
+    twist.rel_turn_in_place_envs = 0.0
     twist.resampling_time_range = (args.seconds + 1.0, args.seconds + 1.0)
     return ManagerBasedRlEnv(cfg, device=args.device)
 
@@ -81,7 +86,7 @@ def runEpisode(env, actor):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoints", nargs="+")
-    parser.add_argument("--terrains", nargs="+", default=list(EVAL_TERRAINS))
+    parser.add_argument("--terrains", nargs="+", default=EVAL_NAMES)
     parser.add_argument("--difficulties", type=float, nargs="+", default=[0.5, 1.0])
     parser.add_argument("--minSpeed", type=float, default=0.1)
     parser.add_argument("--maxSpeed", type=float, default=0.4)
@@ -110,6 +115,7 @@ def main():
                             "runName": trainCfg["runName"],
                             "terrain": terrainName,
                             "heldOut": terrainName in HELD_OUT,
+                            "tier": TIERS[terrainName],
                             "difficulty": difficulty,
                             "commandSpeed": round(result["command"][i].item(), 4),
                             "fell": int(result["fell"][i]),
@@ -120,7 +126,7 @@ def main():
                 fallRate = result["fell"].float().mean().item()
                 velErr = result["velError"].mean().item()
                 print(
-                    f"{trainCfg['runName']:>16}  {terrainName:>16}  d={difficulty:.2f}  "
+                    f"{trainCfg['runName']:>16}  {terrainName:>16}  {TIERS[terrainName]:>6}  d={difficulty:.2f}  "
                     f"fall {fallRate:6.1%}  velErr {velErr:.3f} m/s"
                 )
 
