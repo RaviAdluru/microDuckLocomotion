@@ -32,8 +32,9 @@ def slope(maxSlope=0.10):
 
 
 def waves(maxAmplitude=0.015):
-    return terrainGen.HfWaveTerrainCfg(amplitude_range=(0.0, maxAmplitude), num_waves=3)
-
+    return terrainGen.HfWaveTerrainCfg(
+        amplitude_range=(0.0, maxAmplitude), num_waves=12, vertical_scale=0.001
+    )
 
 def stairs(maxStep=0.015):
     return terrainGen.BoxPyramidStairsTerrainCfg(
