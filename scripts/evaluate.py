@@ -1,6 +1,8 @@
 """Test checkpoints on every eval terrain, including ones never seen in training.
 Each env gets a fixed forward speed command; we record falls, velocity tracking error and distance.
     uv run scripts/evaluate.py runs/a/model_3000.pt runs/b/model_3000.pt --out results/eval.csv
+The combined courses need a longer episode so ducks cross tile seams:
+    uv run scripts/evaluate.py runs/a/model_3000.pt --terrains combinedSeen combinedAll --seconds 20
 """
 
 import argparse
@@ -11,7 +13,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv
 
 from duckWalk.envConfig import makeEnvCfg
-from duckWalk.terrains import EVAL_TERRAINS, HELD_OUT, TIERS, evalTerrain
+from duckWalk.terrains import EVAL_NAMES, HELD_OUT, TIERS, evalTerrain
 from duckWalk.trainer import loadActor
 
 
@@ -84,7 +86,7 @@ def runEpisode(env, actor):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoints", nargs="+")
-    parser.add_argument("--terrains", nargs="+", default=list(EVAL_TERRAINS))
+    parser.add_argument("--terrains", nargs="+", default=EVAL_NAMES)
     parser.add_argument("--difficulties", type=float, nargs="+", default=[0.5, 1.0])
     parser.add_argument("--minSpeed", type=float, default=0.1)
     parser.add_argument("--maxSpeed", type=float, default=0.4)
