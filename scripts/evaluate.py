@@ -11,7 +11,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv
 
 from duckWalk.envConfig import makeEnvCfg
-from duckWalk.terrains import EVAL_TERRAINS, HELD_OUT, evalTerrain
+from duckWalk.terrains import EVAL_TERRAINS, HELD_OUT, TIERS, evalTerrain
 from duckWalk.trainer import loadActor
 
 
@@ -38,6 +38,9 @@ def buildEvalEnv(trainCfg, terrainName, difficulty, args):
     twist.rel_standing_envs = 0.0
     twist.rel_heading_envs = 0.0
     twist.rel_forward_envs = 0.0
+    # Pollen's commands can randomly zero some envs (stand still). every eval duck should walk
+    if hasattr(twist, "zero_command_prob"):
+        twist.zero_command_prob = 0.0
     twist.resampling_time_range = (args.seconds + 1.0, args.seconds + 1.0)
     return ManagerBasedRlEnv(cfg, device=args.device)
 
@@ -110,6 +113,7 @@ def main():
                             "runName": trainCfg["runName"],
                             "terrain": terrainName,
                             "heldOut": terrainName in HELD_OUT,
+                            "tier": TIERS[terrainName],
                             "difficulty": difficulty,
                             "commandSpeed": round(result["command"][i].item(), 4),
                             "fell": int(result["fell"][i]),
@@ -120,7 +124,7 @@ def main():
                 fallRate = result["fell"].float().mean().item()
                 velErr = result["velError"].mean().item()
                 print(
-                    f"{trainCfg['runName']:>16}  {terrainName:>16}  d={difficulty:.2f}  "
+                    f"{trainCfg['runName']:>16}  {terrainName:>16}  {TIERS[terrainName]:>6}  d={difficulty:.2f}  "
                     f"fall {fallRate:6.1%}  velErr {velErr:.3f} m/s"
                 )
 

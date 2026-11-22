@@ -32,11 +32,15 @@ def slope(maxSlope=0.10):
 
 
 def waves(maxAmplitude=0.015):
+    # default vertical_scale is 5 mm, which rounded these waves down to almost flat.
+    # 12 waves over 8 m gives a ~65 cm wavelength, a few strides per wave
     return terrainGen.HfWaveTerrainCfg(
         amplitude_range=(0.0, maxAmplitude), num_waves=12, vertical_scale=0.001
     )
 
+
 def stairs(maxStep=0.015):
+    # raised pyramid: the duck spawns on the top platform, so this tests walking down steps
     return terrainGen.BoxPyramidStairsTerrainCfg(
         step_height_range=(0.0, maxStep), step_width=0.15, platform_width=2.0, border_width=1.0
     )
@@ -70,8 +74,6 @@ def trainTerrains(name):
 
 
 # ---- evaluation ----
-# waves and stairs never show up in training. the *Hard ones are training types pushed past
-# the max height/slope seen in training.
 EVAL_TERRAINS = {
     "flat": flat,
     "bumpyGrid": bumpyGrid,
@@ -83,7 +85,25 @@ EVAL_TERRAINS = {
     "smoothBumpsHard": lambda: smoothBumps(maxHeight=0.030),
     "slopeHard": lambda: slope(maxSlope=0.18),
 }
-HELD_OUT = {"waves", "stairs", "bumpyGridHard", "smoothBumpsHard", "slopeHard"}
+
+# every eval terrain falls in one of three tiers:
+#   seen   - the same types and heights the duck trains on
+#   harder - training types pushed past the training max (tests extrapolation).
+#            at difficulty 0.5 these only match the training max, so evaluate them above 0.5
+#   novel  - shapes never seen in training (tests generalization)
+TIERS = {
+    "flat": "seen",
+    "bumpyGrid": "seen",
+    "smoothBumps": "seen",
+    "slope": "seen",
+    "bumpyGridHard": "harder",
+    "smoothBumpsHard": "harder",
+    "slopeHard": "harder",
+    "waves": "novel",
+    "stairs": "novel",
+}
+HELD_OUT = {name for name, tier in TIERS.items() if tier != "seen"}
+assert set(TIERS) == set(EVAL_TERRAINS), "every eval terrain needs a tier"
 
 
 def evalTerrain(name, difficulty):
