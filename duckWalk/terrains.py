@@ -78,7 +78,7 @@ EVAL_TERRAINS = {
     "smoothBumps": smoothBumps,
     "slope": slope,
     "waves": waves,
-    "stairs": stairs,
+    "stairs": lambda: stairs(maxStep=0.020),
     "bumpyGridHard": lambda: bumpyGrid(maxHeight=0.020),
     "smoothBumpsHard": lambda: smoothBumps(maxHeight=0.030),
     "slopeHard": lambda: slope(maxSlope=0.18),
