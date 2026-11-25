@@ -55,8 +55,9 @@ scripts/
   sanityCheck.py    runs our PPO on cartpole to make sure the algorithm works
   train.py          train a walking policy
   play.py           watch a checkpoint in the MuJoCo viewer
-  evaluate.py       test checkpoints on every eval terrain, writes a CSV
-  plotEval.py       bar charts from the eval CSV
+  evaluate.py       test checkpoints on the eval terrains (validation or test split), writes a CSV
+  plotEval.py       bar charts per terrain from the eval CSV, with error bars
+  plotValidation.py validation curve: eval results vs training iteration
 runs/               training output (checkpoints, tensorboard logs), not committed
 results/            eval CSVs and plots, not committed
 ```
@@ -239,19 +240,22 @@ Every term gets its own graph automatically (`env/Episode_Reward/<termName>`), s
 
 ### Terrains: `duckWalk/terrains.py`
 
-Three parts:
+Four parts:
 
-- **Terrain types:** `flat()`, `bumpyGrid()`, `smoothBumps()`, `slope()`, `waves()`, `stairs()`. Each takes a height or slope limit. Heights are in meters and should stay small: the duck lifts its feet 1-2 cm.
-- **The training mix:** `trainTerrains("mixed")`. Change `subTerrains` to pick which types are used and `proportions` to change how much of the map each one gets (they should add up to 1). `num_rows` is the number of difficulty levels the curriculum moves through. The heights you pass are the max, reached at the hardest row.
-- **Eval terrains:** `EVAL_TERRAINS` lists everything `evaluate.py` and `play.py --terrain` can use, and `HELD_OUT` marks which ones never appear in training.
+- **Terrain types:** `flat()`, `bumpyGrid()`, `smoothBumps()`, `slope()`, `waves()`, `stairsDown()`, `stairsUp()`. Each takes a height or slope limit plus a few shape settings. Heights are in meters and should stay small: the duck lifts its feet 1-2 cm.
+- **The training mix:** `trainTerrains("mixed")`. Change `subTerrains` to pick which types are used and `proportions` to change how many ducks train on each (they should add up to 1). Each duck keeps one terrain type for the whole run; only its difficulty row changes. `num_rows` is the number of difficulty levels the curriculum moves through. The heights you pass are the max, reached at the hardest row.
+- **Eval terrains:** `EVAL_TERRAINS` (single-type 8 m tiles) and `COMBINED_COURSES` (2 m patchwork tiles). `TIERS` labels each one `seen`, `harder`, `novel` or `combined`, and `SPLITS` groups them into validation and test (see [Evaluation](#evaluation)).
+- **`TRAINING_TYPE`** maps each seen/harder eval terrain to the training type it's a version of, so evaluation can check whether training actually reached that difficulty.
 
 **Make training terrain harder:** raise the limits inside `trainTerrains`, e.g. `bumpyGrid(maxHeight=0.015)`.
 
 **Add a new training mix:** add another `if name == "...":` branch to `trainTerrains`, then train with `--terrainSet yourName`.
 
-**Add a held-out test terrain:** add it to `EVAL_TERRAINS` and its name to `HELD_OUT`. If you add a terrain type to training, take it out of `HELD_OUT`, or your held-out results stop meaning anything.
+**Add an eval terrain:** add it to `EVAL_TERRAINS` and give it a tier in `TIERS` (there's an `assert` that fails if you forget). If it's a version of a training type, add it to `TRAINING_TYPE` too. If you add a terrain type to training, move its eval version out of `novel`, or the held-out results stop meaning anything.
 
-Other terrain types mjlab has (pits, rails, boxes, gaps and so on) are in `mjlab.terrains`. Look at the `...TerrainCfg` classes there.
+**Watch the collision count.** Box terrains create one collision box per step or cell. Shrinking bumpyGrid cells from 0.45 m to 0.175 m raised the terrain from about 2.6k to 17.7k geoms and ran out of memory with just 16 ducks on CPU. Heightfield terrains (`Hf...`) are a single collision object per tile, so use those for fine-grained roughness. The startup line `softened N terrain geoms` shows the count.
+
+Other terrain types mjlab has (pits, rails, stepping stones, gaps and so on) are in `mjlab.terrains`. Look at the `...TerrainCfg` classes there.
 
 ### Observations, commands, randomization: `duckWalk/envConfig.py`
 
@@ -385,7 +389,8 @@ For held-out evaluation results, `scripts/plotEval.py` makes bar charts from the
 
 ```bash
 uv run scripts/play.py runs/<run>/model_3000.pt                              # native window
-uv run scripts/play.py runs/<run>/model_3000.pt --terrain stairs --difficulty 1.0
+uv run scripts/play.py runs/<run>/model_3000.pt --terrain stairsUp --difficulty 1.0
+uv run scripts/play.py runs/<run>/model_3000.pt --terrain combinedAll --difficulty 1.0 --numEnvs 8
 uv run scripts/play.py runs/<run>/model_3000.pt --numEnvs 4                  # several ducks at once
 uv run scripts/play.py runs/<run>/model_3000.pt --viewer viser               # in the browser instead
 ```
@@ -394,7 +399,7 @@ uv run scripts/play.py runs/<run>/model_3000.pt --viewer viser               # i
 |---|---|
 | `--viewer` | `native` opens a MuJoCo window, `viser` serves the sim in the browser (it prints the address to open) |
 | `--numEnvs` | how many ducks to show |
-| `--terrain` | show one eval terrain instead of the training terrain, e.g. `waves`, `stairs`, `slopeHard` (any name in `EVAL_TERRAINS`) |
+| `--terrain` | show one eval terrain instead of the training terrain, e.g. `waves`, `stairsUp`, `combinedAll` (any name in the [eval terrain table](#evaluation)) |
 | `--difficulty` | 0 to 1, how hard that terrain is |
 | `--device` | `cpu` or `cuda:0`. Playback runs fine on a laptop CPU |
 
@@ -415,41 +420,77 @@ Side-by-side playback across runs at the same iteration is the easiest way to se
 
 ## Evaluation
 
-`evaluate.py` runs each checkpoint on every eval terrain at the given difficulties. Every env gets a fixed straight-ahead speed command between `--minSpeed` and `--maxSpeed`. Pushes and randomization are off unless you pass `--pushes` / `--domainRand`.
+`evaluate.py` runs checkpoints on the eval terrains at fixed difficulties. Every duck gets a fixed straight-ahead speed command between `--minSpeed` and `--maxSpeed` (inside the training range of ±0.4 m/s) and walks with the deterministic (mean) action. Pushes and randomization are off unless you pass `--pushes` / `--domainRand`.
+
+### Validation vs test
+
+The eval terrains are split in two, and the split matters for keeping the results honest:
+
+- **Validation** (`--split validation`): the `seen` and `harder` tiers. Look at these as much as you want while choosing checkpoints, reward weights, history length and so on.
+- **Test** (`--split test`): the `novel` and `combined` tiers. Run these once, at the end, on the runs you already picked. Once you start tuning things to make the test numbers better, they stop measuring generalization.
+
+### Commands
 
 ```bash
-uv run scripts/evaluate.py runs/a/model_3000.pt runs/b/model_3000.pt --out results/eval.csv
-uv run scripts/plotEval.py results/eval.csv --difficulty 1.0
+# validation curve over one training run: every saved checkpoint
+uv run scripts/evaluate.py runs/<run>/model_*.pt --split validation --difficulties 0.5 --out results/val.csv
+uv run scripts/plotValidation.py results/val.csv --difficulty 0.5
+
+# final test, once, on the chosen checkpoints
+uv run scripts/evaluate.py runs/a/model_3000.pt runs/b/model_3000.pt --split test --out results/test.csv
+uv run scripts/evaluate.py runs/a/model_3000.pt runs/b/model_3000.pt --terrains combinedSeen combinedAll --seconds 20 --out results/testCombined.csv
+uv run scripts/plotEval.py results/test.csv --difficulty 1.0
+
+# robustness pass: same thing with pushes and randomized physics
+uv run scripts/evaluate.py runs/a/model_3000.pt --split test --pushes --domainRand --out results/testRobust.csv
 ```
 
-`plotEval.py` saves `results/fell_d1.0.png` and `results/velError_d1.0.png`: one bar per run per terrain, with held-out terrains marked `*`.
+`plotValidation.py` plots fall rate and velocity error against training iteration, one line per terrain. Put it next to the training return curve: the gap between them is the generalization gap. `plotEval.py` makes one bar per run per terrain with standard-error bars, using each run's latest checkpoint in the CSV unless you pass `--iteration`.
 
 | flag | default | what it does |
 |---|---|---|
-| `--terrains` | all | which eval terrains to test, e.g. `--terrains flat stairs waves` |
+| `--split` | `all` | `validation`, `test` or `all` |
+| `--terrains` | | pick terrains by name instead, e.g. `--terrains flat stairsUp` |
 | `--difficulties` | `0.5 1.0` | difficulty levels to test |
 | `--minSpeed`, `--maxSpeed` | `0.1`, `0.4` | range of forward speeds commanded (m/s) |
-| `--numEnvs` | `128` | robots per terrain. More gives tighter numbers |
-| `--seconds` | `10` | episode length |
+| `--numEnvs` | `512` | ducks per terrain. Lower it on a laptop |
+| `--seconds` | `10` | episode length. Use 20 for the combined courses |
+| `--seed` | `1000` | fixes the random terrain and spawns, so every checkpoint sees identical ground. Keep it different from training seeds |
 | `--pushes` | off | keep random pushes on |
 | `--domainRand` | off | randomize mass, friction etc. |
 | `--out` | `results/eval.csv` | where the CSV goes |
 
-The CSV has one row per robot: terrain, whether it was held out, difficulty, commanded speed, whether it fell, mean velocity error and distance walked.
+The CSV has one row per duck: checkpoint, iteration, training seed, eval seed, terrain, tier, held out or not, difficulty, how far training got on that terrain type (`trainedUpTo`, `withinTraining`), pushes/randomization, commanded speed, whether it fell, mean velocity error and distance walked.
 
-| terrain | in training? | notes |
-|---|---|---|
-| flat | yes | |
-| bumpyGrid | yes | random-height boxes, up to 1 cm |
-| smoothBumps | yes | perlin noise, up to 1.5 cm |
-| slope | yes | up to about 5.7 deg |
-| waves | no | smooth sine waves, new shape |
-| stairs | no | pyramid stairs, up to 1.5 cm steps |
-| bumpyGridHard | no | same type, up to 2 cm |
-| smoothBumpsHard | no | same type, up to 3 cm |
-| slopeHard | no | up to about 10 deg |
+### Is "seen" really seen?
 
-The heights look tiny, but the duck only lifts its feet 1-2 cm, so these are real obstacles at its scale.
+The curriculum decides which difficulty rows a duck actually trains on. Each checkpoint records, per training terrain type, the curriculum level the top 10% of its ducks reached (also logged as `terrain/reach90/<type>`). If you evaluate a `seen` terrain above that, `evaluate.py` prints a note and marks the rows `withinTraining = False`. Report those as extrapolation, not as seen.
+
+### How many ducks is enough
+
+A fall rate from n ducks has a standard error of √(p(1−p)/n), at most √(0.25/512) ≈ 2.2% with the default 512. So differences of a few percent between two runs aren't meaningful from one training seed. For the main comparisons, train each config with 3 seeds (`--seed 1`, `2`, `3`) and report the mean and spread across seeds.
+
+### Eval terrains
+
+At difficulty 1.0 (difficulty scales heights linearly from the minimum up to these maximums):
+
+| terrain | tier | split | at difficulty 1.0 |
+|---|---|---|---|
+| flat | seen | validation | |
+| bumpyGrid | seen | validation | random-height boxes up to 1 cm, 45 cm cells |
+| smoothBumps | seen | validation | perlin noise up to 1.5 cm |
+| slope | seen | validation | rise/run 0.10 (5.7°) |
+| bumpyGridHard | harder | validation | boxes up to 2 cm |
+| smoothBumpsHard | harder | validation | noise up to 3 cm |
+| slopeHard | harder | validation | rise/run 0.18 (about 10°) |
+| waves | novel | test | 1.0 cm amplitude, ~67 cm wavelength, max slope 0.094 (5.4°), inside the training slope range |
+| wavesHard | novel | test | 1.5 cm amplitude, max slope 0.14 (8°): new shape and steeper |
+| stairsDown | novel | test | spawns on top of a pyramid, 2 cm steps down |
+| stairsUp | novel | test | spawns in a pit, 2 cm steps up |
+| combinedSeen | combined | test | 2 m patchwork of the four training types |
+| combinedAll | combined | test | 2 m patchwork of training types plus waves and both stairs |
+
+The `harder` tier only goes past the training max above difficulty 0.5, so evaluate it at 1.0. The heights look tiny, but the duck only lifts its feet 1-2 cm, so these are real obstacles at its scale.
 
 ## Planned experiments
 
@@ -459,7 +500,9 @@ The heights look tiny, but the duck only lifts its feet 1-2 cm, so these are rea
 4. **Domain randomization.** On vs off, evaluated with `--pushes --domainRand` to see robustness.
 5. **Baseline.** Compare against Pollen's trained rough-terrain policy.
 
-Run each with a few seeds (`--seed`) so the comparisons hold up.
+Run each with a few seeds (`--seed`) so the comparisons hold up. Make every choice from validation results, then run the test split once at the end.
+
+**Watch the curriculum on the first real run.** A duck only moves up a difficulty row if it ends an episode more than 4 m (half a tile) from where it spawned, and commands change direction every 3-8 s. If `env/Curriculum/terrain_levels/*` stay flat, the curriculum is the bottleneck, and the usual fixes are smaller training tiles or promoting on velocity-tracking error instead of distance.
 
 ## Why the versions are pinned
 
