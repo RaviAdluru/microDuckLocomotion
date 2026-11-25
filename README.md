@@ -261,7 +261,14 @@ Other terrain types mjlab has (pits, rails, stepping stones, gaps and so on) are
 
 `makeEnvCfg` starts from Pollen's walking config and swaps in our pieces. Things you'd change here:
 
-**Observation history.** Set with `--historyLength N`. The actor then sees the last N frames stacked (51 × N numbers).
+**Observation history.** Set with `--historyLength N`. The actor then sees its last N frames instead of only the current one.
+
+- **Why:** the actor is blind. One frame can't separate "flat ground" from "the left foot just landed on a 1 cm ledge," but a few frames of how the joints and body responded can. History lets the policy infer things it can't measure directly: terrain under the feet, contact state, its own velocity.
+- **How it's built:** mjlab keeps a ring buffer for every actor term and flattens it oldest-to-newest, term by term. With N = 5, `joint_pos` becomes 70 numbers (5 × 14) and the full actor input is 255 (5 × 51). The startup table shows it as `(70,) ← 5×(14,)`.
+- **Resets:** when an episode ends, that duck's buffer is filled with the first frame of its new episode, so nothing leaks between episodes.
+- **Only the actor gets it.** The critic already sees the privileged state the actor is trying to infer.
+- **Cost:** the first layer grows with N. With the default `512 256 128` network, the actor goes from about 193k parameters at N = 1 to about 297k at N = 5. More inputs also means more ways to overfit to the training terrain, which is why N should be chosen on validation results.
+- **Everything downstream follows automatically.** The checkpoint stores the history length, and `play.py` and `evaluate.py` rebuild the env to match.
 
 **What the networks observe.** The actor and critic terms are in `cfg.observations["actor"].terms` and `cfg.observations["critic"].terms`. Remove one with `.pop("termName")`. For example, to test whether the policy needs the last action:
 
@@ -496,7 +503,7 @@ The `harder` tier only goes past the training max above difficulty 0.5, so evalu
 
 1. **Reward ablation.** Train `minimal`, `posture` and `full` on flat ground and compare gaits. `minimal` will probably find some weird shuffle or hop, which is the point.
 2. **Terrain.** Train on `flat` vs `mixed`, then evaluate both on everything. This shows what the terrain curriculum buys on held-out terrain.
-3. **Memory.** `--historyLength 1` vs `5` vs `10`. The policy is blind, so a short history should help it feel out the ground.
+3. **Memory.** `--historyLength 1` vs `5` vs `10` (0.02 s, 0.1 s and 0.2 s of past at 50 Hz), all on mixed terrain. Pick N from the validation split, then compare on the test split. The prediction is that history helps most on terrain the duck has to feel out (bumpyGrid, stairsUp, combinedAll) and least on flat ground. If it doesn't, that's a real result too.
 4. **Domain randomization.** On vs off, evaluated with `--pushes --domainRand` to see robustness.
 5. **Baseline.** Compare against Pollen's trained rough-terrain policy.
 
