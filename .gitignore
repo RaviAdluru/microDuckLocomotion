@@ -13,3 +13,6 @@ results/*.png
 .vscode/
 .idea/
 .DS_Store
+logs/
+slurm_*.out
+gpuTest*
