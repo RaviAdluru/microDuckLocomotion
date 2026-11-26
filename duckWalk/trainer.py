@@ -20,7 +20,28 @@ def buildModels(cfg, actorDim, criticDim, actDim, device):
     return actor, critic
 
 
-def saveCheckpoint(path, actor, critic, ppo, iteration, cfg, dims):
+def terrainReach(env):
+    # for each training terrain type, the curriculum level that the top 10% of its ducks are at.
+    # returns None when there's no curriculum (flat training or eval terrain)
+    terrain = getattr(env.scene, "terrain", None)
+    levels = getattr(terrain, "terrain_levels", None)
+    if levels is None or terrain.terrain_origins is None:
+        return None
+    generator = terrain.cfg.terrain_generator
+    if generator is None or not generator.curriculum:
+        return None
+    names = list(generator.sub_terrains)
+    if terrain.terrain_origins.shape[1] != len(names):
+        return None
+    reach = {}
+    for i, name in enumerate(names):
+        mask = terrain.terrain_types == i
+        if mask.any():
+            reach[name] = int(levels[mask].float().quantile(0.9).item())
+    return reach
+
+
+def saveCheckpoint(path, actor, critic, ppo, iteration, cfg, dims, reached=None, numRows=None):
     torch.save(
         {
             "actor": actor.state_dict(),
@@ -30,6 +51,8 @@ def saveCheckpoint(path, actor, critic, ppo, iteration, cfg, dims):
             "iteration": iteration,
             "config": asdict(cfg),
             "dims": dims,
+            # highest curriculum level reached so far per terrain type, see terrainReach()
+            "terrainReach": {"levels": reached, "numRows": numRows} if reached else None,
         },
         path,
     )
@@ -47,6 +70,12 @@ def loadActor(path, device):
     return actor, cfg
 
 
+def loadCheckpointInfo(path):
+    # iteration and curriculum reach without building the network, for eval bookkeeping
+    ckpt = torch.load(path, map_location="cpu")
+    return ckpt["iteration"], ckpt.get("terrainReach")
+
+
 def train(env, cfg, logger, runDir):
     device = env.device
     obs, _ = env.reset()
@@ -62,6 +91,10 @@ def train(env, cfg, logger, runDir):
     buffer = RolloutBuffer(cfg.numStepsPerEnv, numEnvs, actorDim, criticDim, actDim, device)
 
     startIteration = 0
+    reached = {}
+    generator = getattr(getattr(env.scene, "terrain", None), "cfg", None)
+    generator = getattr(generator, "terrain_generator", None)
+    numRows = generator.num_rows if generator is not None else None
     if cfg.resume:
         ckpt = torch.load(cfg.resume, map_location=device)
         actor.load_state_dict(ckpt["actor"])
@@ -69,6 +102,8 @@ def train(env, cfg, logger, runDir):
         ppo.optimizer.load_state_dict(ckpt["optimizer"])
         ppo.learningRate = ckpt["learningRate"]
         startIteration = ckpt["iteration"] + 1
+        if ckpt.get("terrainReach"):
+            reached = dict(ckpt["terrainReach"]["levels"])
         print(f"resumed from {cfg.resume} at iteration {startIteration}")
 
     epReturn = torch.zeros(numEnvs, device=device)
@@ -144,6 +179,13 @@ def train(env, cfg, logger, runDir):
         if levels is not None:
             logValues["terrain/meanLevel"] = levels.float().mean().item()
             logValues["terrain/maxLevel"] = levels.max().item()
+        # keep the best level reached per type over the whole run, so eval knows which
+        # difficulties the policy actually trained on
+        current = terrainReach(env)
+        if current:
+            for name, level in current.items():
+                reached[name] = max(reached.get(name, 0), level)
+                logValues[f"terrain/reach90/{name}"] = level
         logger.log(logValues, iteration)
 
         if iteration % 10 == 0:
@@ -156,6 +198,6 @@ def train(env, cfg, logger, runDir):
 
         if iteration % cfg.saveInterval == 0 or iteration == cfg.maxIterations - 1:
             path = os.path.join(runDir, f"model_{iteration}.pt")
-            saveCheckpoint(path, actor, critic, ppo, iteration, cfg, dims)
+            saveCheckpoint(path, actor, critic, ppo, iteration, cfg, dims, reached, numRows)
 
     return actor, critic

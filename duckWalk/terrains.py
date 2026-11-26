@@ -13,7 +13,9 @@ def flat():
 
 
 def bumpyGrid(maxHeight=0.010, platformWidth=1.5):
-    # cobblestone-ish boxes with random heights. grid_width must not divide the tile size evenly
+    # random-height boxes. grid_width must not divide the tile size evenly.
+    # each cell is its own collision box, so smaller cells get expensive fast: 0.175 m cells
+    # made ~17.7k terrain geoms (vs ~2.6k at 0.45 m) and ran out of memory at 16 envs on CPU
     return terrainGen.BoxRandomGridTerrainCfg(
         grid_width=0.45, grid_height_range=(0.0, maxHeight), platform_width=platformWidth
     )
@@ -34,9 +36,11 @@ def slope(maxSlope=0.10, platformWidth=2.0):
     )
 
 
-def waves(maxAmplitude=0.015, numWaves=12, borderWidth=0.0):
+def waves(maxAmplitude=0.010, numWaves=12, borderWidth=0.0):
     # default vertical_scale is 5 mm, which rounded these waves down to almost flat.
-    # numWaves counts waves per tile: 12 over 8 m gives a ~65 cm wavelength, a few strides per wave
+    # numWaves counts waves per tile: 12 over 8 m gives a ~67 cm wavelength, a few strides per wave.
+    # steepest slope of a sine wave is 2*pi*A/wavelength: 1.0 cm -> 0.094 (5.4 deg), just under
+    # the 0.10 training slope max, so plain waves only test the new shape
     return terrainGen.HfWaveTerrainCfg(
         amplitude_range=(0.0, maxAmplitude),
         num_waves=numWaves,
@@ -45,9 +49,21 @@ def waves(maxAmplitude=0.015, numWaves=12, borderWidth=0.0):
     )
 
 
-def stairs(maxStep=0.015, platformWidth=2.0, borderWidth=1.0):
-    # raised pyramid: the duck spawns on the top platform, so this tests walking down steps
+def stairsDown(maxStep=0.020, platformWidth=2.0, borderWidth=1.0):
+    # raised pyramid: the duck spawns on the top platform and walks down
     return terrainGen.BoxPyramidStairsTerrainCfg(
+        step_height_range=(0.0, maxStep),
+        step_width=0.15,
+        platform_width=platformWidth,
+        border_width=borderWidth,
+    )
+
+
+def stairsUp(maxStep=0.020, platformWidth=2.0, borderWidth=1.0):
+    # sunken pyramid: the duck spawns on the pit floor and has to climb out.
+    # the outer border is at ground level, same as every other tile edge.
+    # pit depth is (steps + 1) * step height: 14 * 2 cm = 28 cm on 8 m tiles, 4 * 2 cm on 2 m tiles
+    return terrainGen.BoxInvertedPyramidStairsTerrainCfg(
         step_height_range=(0.0, maxStep),
         step_width=0.15,
         platform_width=platformWidth,
@@ -67,6 +83,8 @@ def trainTerrains(name):
             "smoothBumps": smoothBumps(),
             "slope": slope(),
         }
+        # in curriculum mode mjlab builds one column per terrain type. proportion only sets
+        # how many ducks spawn on each type, and a duck keeps its type for the whole run
         proportions = {"flat": 0.2, "bumpyGrid": 0.3, "smoothBumps": 0.3, "slope": 0.2}
         for key, cfg in subTerrains.items():
             cfg.proportion = proportions[key]
@@ -75,7 +93,7 @@ def trainTerrains(name):
             size=(8.0, 8.0),
             border_width=20.0,
             num_rows=10,
-            num_cols=20,
+            num_cols=len(subTerrains),
             curriculum=True,
             sub_terrains=subTerrains,
         )
@@ -88,11 +106,13 @@ EVAL_TERRAINS = {
     "bumpyGrid": bumpyGrid,
     "smoothBumps": smoothBumps,
     "slope": slope,
-    "waves": waves,
-    "stairs": lambda: stairs(maxStep=0.020),
     "bumpyGridHard": lambda: bumpyGrid(maxHeight=0.020),
     "smoothBumpsHard": lambda: smoothBumps(maxHeight=0.030),
     "slopeHard": lambda: slope(maxSlope=0.18),
+    "waves": waves,
+    "wavesHard": lambda: waves(maxAmplitude=0.015),  # 0.14 max slope (8 deg): new shape and steeper
+    "stairsDown": stairsDown,
+    "stairsUp": stairsUp,
 }
 
 # ---- combined courses ----
@@ -118,8 +138,9 @@ def combinedSeenTiles():
 def combinedAllTiles():
     # training types plus the novel ones, mixed together
     tiles = combinedSeenTiles()
-    tiles["waves"] = waves(numWaves=3, borderWidth=0.1)  # 3 waves over 2 m keeps the ~65 cm wavelength
-    tiles["stairs"] = stairs(maxStep=0.020, platformWidth=0.5, borderWidth=0.25)
+    tiles["waves"] = waves(numWaves=3, borderWidth=0.1)  # 3 waves over 2 m keeps the ~67 cm wavelength
+    tiles["stairsDown"] = stairsDown(platformWidth=0.5, borderWidth=0.25)
+    tiles["stairsUp"] = stairsUp(platformWidth=0.5, borderWidth=0.25)
     return tiles
 
 
@@ -146,7 +167,9 @@ TIERS = {
     "smoothBumpsHard": "harder",
     "slopeHard": "harder",
     "waves": "novel",
-    "stairs": "novel",
+    "wavesHard": "novel",
+    "stairsDown": "novel",
+    "stairsUp": "novel",
     "combinedSeen": "combined",
     "combinedAll": "combined",
 }
@@ -156,8 +179,29 @@ TIERS = {
 HELD_OUT = {name for name, tier in TIERS.items() if tier != "seen"}
 assert set(TIERS) == set(EVAL_NAMES), "every eval terrain needs a tier"
 
+# validation is what we look at while choosing checkpoints, rewards and settings.
+# test is only run at the end on the runs we already picked, so it stays an honest held-out score
+SPLITS = {
+    "validation": [name for name, tier in TIERS.items() if tier in ("seen", "harder")],
+    "test": [name for name, tier in TIERS.items() if tier in ("novel", "combined")],
+    "all": EVAL_NAMES,
+}
 
-def evalTerrain(name, difficulty):
+# which training terrain each seen/harder eval terrain is a version of. used to check whether
+# training actually reached the difficulty being evaluated
+TRAINING_TYPE = {
+    "flat": "flat",
+    "bumpyGrid": "bumpyGrid",
+    "smoothBumps": "smoothBumps",
+    "slope": "slope",
+    "bumpyGridHard": "bumpyGrid",
+    "smoothBumpsHard": "smoothBumps",
+    "slopeHard": "slope",
+}
+
+
+def evalTerrain(name, difficulty, seed=None):
+    # seed fixes the random parts (bump heights, noise) so every checkpoint sees the same ground
     if name in COMBINED_COURSES:
         tiles = COMBINED_COURSES[name]()
         for cfg in tiles.values():
@@ -170,6 +214,7 @@ def evalTerrain(name, difficulty):
             curriculum=False,
             difficulty_range=(difficulty, difficulty),
             sub_terrains=tiles,
+            seed=seed,
         )
     if name not in EVAL_TERRAINS:
         raise ValueError(f"unknown eval terrain '{name}', pick from {EVAL_NAMES}")
@@ -181,4 +226,5 @@ def evalTerrain(name, difficulty):
         curriculum=False,
         difficulty_range=(difficulty, difficulty),
         sub_terrains={name: EVAL_TERRAINS[name]()},
+        seed=seed,
     )

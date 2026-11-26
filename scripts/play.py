@@ -29,7 +29,7 @@ def main():
     parser.add_argument("checkpoint")
     parser.add_argument("--viewer", choices=["native", "viser"], default="native")
     parser.add_argument("--numEnvs", type=int, default=1)
-    parser.add_argument("--terrain", default="", help="show one eval terrain, e.g. stairs or waves")
+    parser.add_argument("--terrain", default="", help="show one eval terrain, e.g. stairsUp or combinedAll")
     parser.add_argument("--difficulty", type=float, default=0.5)
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()

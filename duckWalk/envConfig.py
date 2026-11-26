@@ -47,6 +47,12 @@ def makeEnvCfg(
     # actor only gets what the real robot can measure (IMU, encoders, last action, command).
     # the critic additionally sees true base velocity and foot contact info, which only
     # exists in sim. it's thrown away after training so this is fine
+    # observation history: the actor sees its last N frames instead of just the current one.
+    # mjlab keeps a ring buffer per term, oldest to newest, and flattens it, so each term
+    # becomes N copies of itself (joint_pos: 14 -> 14*N) and the actor input is 51*N.
+    # on reset the buffer is filled with the first frame of the new episode, so nothing
+    # carries over between episodes. only the actor gets history: the critic already sees
+    # the privileged state it would otherwise have to infer
     if historyLength > 1:
         cfg.observations["actor"].history_length = historyLength
 
