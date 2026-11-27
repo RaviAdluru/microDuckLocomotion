@@ -39,6 +39,9 @@ def main():
         historyLength=cfg.historyLength,
         domainRand=cfg.domainRand,
         numEnvs=cfg.numEnvs,
+        actionRateRamp=cfg.actionRateRamp,
+        trackLinWeight=cfg.trackLinWeight,
+        stepsPerIteration=cfg.numStepsPerEnv,
     )
     env.seed(cfg.seed)
 

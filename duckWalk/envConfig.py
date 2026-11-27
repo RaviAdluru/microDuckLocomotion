@@ -4,6 +4,8 @@ then swap in our own rewards, observations, terrains and randomization.
 """
 
 from mjlab.envs import ManagerBasedRlEnv
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab_microduck.tasks import mdp as duckMdp
 from mjlab_microduck.tasks.microduck_velocity_env_cfg import make_microduck_velocity_env_cfg
 
 from duckWalk.rewards import buildRewards
@@ -31,6 +33,9 @@ def makeEnvCfg(
     numEnvs=4096,
     play=False,
     terrainOverride=None,
+    actionRateRamp=False,
+    trackLinWeight=2.0,
+    stepsPerIteration=24,
 ):
     isFlat = terrainSet == "flat" and terrainOverride is None
     cfg = make_microduck_velocity_env_cfg(play=play, rough=not isFlat)
@@ -57,6 +62,7 @@ def makeEnvCfg(
         cfg.observations["actor"].history_length = historyLength
 
     cfg.rewards = buildRewards(rewardSet)
+    cfg.rewards["trackLinVel"].weight = trackLinWeight
 
     if terrainOverride is not None:
         cfg.scene.terrain.terrain_generator = terrainOverride
@@ -65,9 +71,27 @@ def makeEnvCfg(
 
     # their curricula ramp reward weights and head commands we removed. keep only the
     # terrain curriculum, and only when there's a curriculum terrain to move through
-    keepTerrainCurriculum = not isFlat and terrainOverride is None and not play
+    generator = cfg.scene.terrain.terrain_generator
+    usesCurriculum = generator is not None and generator.curriculum
+    keepTerrainCurriculum = usesCurriculum and terrainOverride is None and not play
     terrainCurriculum = cfg.curriculum.get("terrain_levels")
     cfg.curriculum = {"terrain_levels": terrainCurriculum} if keepTerrainCurriculum else {}
+    if generator is not None and not usesCurriculum and terrainOverride is None:
+        # random-tile training: spawn on any row, not just the first 6
+        cfg.scene.terrain.max_init_terrain_level = None
+
+    # Pollen's action-rate schedule: -0.1 while a gait forms, tightening to -1.0 by iteration
+    # 1500. the curriculum counts env steps, so stages are iteration * steps per iteration
+    if actionRateRamp and "actionRate" in cfg.rewards and not play:
+        stages = [(0, -0.1), (500, -0.2), (750, -0.4), (1000, -0.6), (1250, -0.8), (1500, -1.0)]
+        cfg.rewards["actionRate"].weight = -0.1
+        cfg.curriculum["actionRateRamp"] = CurriculumTermCfg(
+            func=duckMdp.reward_weight,
+            params={
+                "reward_name": "actionRate",
+                "weight_stages": [{"step": it * stepsPerIteration, "weight": w} for it, w in stages],
+            },
+        )
 
     if not domainRand:
         for name in DOMAIN_RAND_EVENTS:

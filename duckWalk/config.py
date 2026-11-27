@@ -14,9 +14,13 @@ class TrainConfig:
     # environment
     numEnvs: int = 4096
     rewardSet: str = "full"  # minimal | posture | full  (see rewards.py)
-    terrainSet: str = "mixed"  # flat | mixed  (see terrains.py)
+    terrainSet: str = "mixed"  # flat | mixed | mixedUniform  (see terrains.py)
     historyLength: int = 1  # frames of actor obs stacked together, 1 = no memory
     domainRand: bool = True  # mass/friction/motor gain randomization + pushes
+    # start the action-rate penalty small and tighten it over training (Pollen's schedule),
+    # so the policy can explore big leg motions before it is pushed toward smooth ones
+    actionRateRamp: bool = False
+    trackLinWeight: float = 2.0  # weight on the forward/sideways speed tracking reward
 
     # networks
     hiddenDims: tuple[int, ...] = field(default_factory=lambda: (512, 256, 128))

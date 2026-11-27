@@ -76,7 +76,7 @@ def stairsUp(maxStep=0.020, platformWidth=2.0, borderWidth=1.0):
 def trainTerrains(name):
     if name == "flat":
         return None  # envConfig switches to a plain ground plane
-    if name == "mixed":
+    if name in ("mixed", "mixedUniform"):
         subTerrains = {
             "flat": flat(),
             "bumpyGrid": bumpyGrid(),
@@ -88,16 +88,20 @@ def trainTerrains(name):
         proportions = {"flat": 0.2, "bumpyGrid": 0.3, "smoothBumps": 0.3, "slope": 0.2}
         for key, cfg in subTerrains.items():
             cfg.proportion = proportions[key]
-        # rows are difficulty levels, the curriculum moves each duck up/down a row
+        # mixed: rows are difficulty levels, the curriculum moves each duck up/down a row.
+        # mixedUniform: no curriculum. every tile gets a random type and a random difficulty
+        # in [0, 1], and each duck stays on one tile, so every rollout covers all difficulties.
+        # added because mjlab's curriculum only promotes ducks that end > 4 m from spawn, which
+        # our slow, randomly turning commands almost never allow, so mixed runs sat on row 0
         return TerrainGeneratorCfg(
             size=(8.0, 8.0),
             border_width=20.0,
             num_rows=10,
             num_cols=len(subTerrains),
-            curriculum=True,
+            curriculum=(name == "mixed"),
             sub_terrains=subTerrains,
         )
-    raise ValueError(f"unknown terrain set '{name}', pick from ['flat', 'mixed']")
+    raise ValueError(f"unknown terrain set '{name}', pick from ['flat', 'mixed', 'mixedUniform']")
 
 
 # ---- evaluation ----
